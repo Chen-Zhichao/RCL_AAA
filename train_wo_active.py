@@ -18,8 +18,10 @@ from core.solver import adjust_learning_rate
 from core.utils.misc import mkdir
 from core.utils.logger import setup_logger
 from core.utils.metric_logger import MetricLogger
-from core.active.adaptive_annotation import AdaptiveAnnotation
+from core.active.build import PixelSelection, RegionSelection
 from core.datasets.dataset_path_catalog import DatasetCatalog
+from core.loss.negative_learning_loss import NegativeLearningLoss
+from core.loss.local_consistent_loss import LocalConsistentLoss
 from core.loss.intra_image_cl_loss import IntraImageContrastiveLoss
 from core.loss.inter_image_cl_loss import InterImageContrastiveLoss
 from core.loss.cross_domain_cl_loss import CrossDomainContrastiveLoss
@@ -75,14 +77,14 @@ def train(cfg):
     # init data loader
     src_train_data = build_dataset(cfg, mode='train', is_source=True)
     tgt_train_data = build_dataset(cfg, mode='train', is_source=False)
-    tgt_epoch_data = build_dataset(cfg, mode='active', is_source=False, epochwise=True)
+    # tgt_epoch_data = build_dataset(cfg, mode='active', is_source=False, epochwise=True)
 
     src_train_loader = DataLoader(src_train_data, batch_size=cfg.SOLVER.BATCH_SIZE, shuffle=True, num_workers=4,
                                   pin_memory=True, drop_last=True)
     tgt_train_loader = DataLoader(tgt_train_data, batch_size=cfg.SOLVER.BATCH_SIZE, shuffle=True, num_workers=4,
                                   pin_memory=True, drop_last=True)
-    tgt_epoch_loader = DataLoader(tgt_epoch_data, batch_size=1, shuffle=False, num_workers=4,
-                                  pin_memory=True, drop_last=True) 
+    # tgt_epoch_loader = DataLoader(tgt_epoch_data, batch_size=1, shuffle=False, num_workers=4,
+                                #   pin_memory=True, drop_last=True) 
     
     # init loss
     sup_criterion = nn.CrossEntropyLoss(ignore_index=255)
@@ -121,6 +123,8 @@ def train(cfg):
         tgt_input = tgt_input.cuda(non_blocking=True)
         tgt_mask = tgt_mask.cuda(non_blocking=True)
         
+
+
         src_size = src_input.shape[-2:]
         src_out = classifier(feature_extractor(src_input), size=src_size)
         src_predict = torch.softmax(src_out, dim=1)
@@ -142,13 +146,15 @@ def train(cfg):
                                                         numparts_w=cfg.LOSS.NUMPARTS_W,
                                                         tgt_centroids_base_ratio=0.9,
                                                         tgt_out=tgt_out)
+        global_batch_centroids_src = RegionSplit_CentroidCal(predict=src_predict, 
+                                                            label=src_label, 
+                                                            is_source=True,
+                                                            numparts_h=1, 
+                                                            numparts_w=1)
 
         # source supervision loss
         loss = torch.Tensor([0]).cuda()
-
-        loss_sup_src = sup_criterion(src_out, src_label)
-        tb_writer.add_scalar(tag="loss/sup_src", scalar_value=loss_sup_src, global_step=iteration)
-        loss += loss_sup_src
+        # loss_sup = sup_criterion(src_out, src_label)
 
         # intra-image level contrastive loss
         intra_cl_loss_src = IntraImageContrastiveLoss(batch_centroids=batch_centroids_src, 
@@ -254,17 +260,6 @@ def train(cfg):
                         'optimizer_fea': optimizer_fea.state_dict(),
                         'optimizer_cls': optimizer_cls.state_dict(),
                         }, filename)
-
-        if iteration in cfg.ACTIVE.SELECT_ITER or cfg.DEBUG:
-            AdaptiveAnnotation(
-                                cfg=cfg,
-                                feature_extractor=feature_extractor,
-                                classifier=classifier,
-                                src_train_loader=src_train_loader,
-                                tgt_epoch_loader=tgt_epoch_loader,
-                                now_iteration=iteration
-            )
-            active_round += 1
 
         if iteration == cfg.SOLVER.MAX_ITER:
             break

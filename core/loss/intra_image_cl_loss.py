@@ -1,0 +1,72 @@
+import torch
+import numpy as np
+from .contrastive_loss import ContrastiveLoss
+
+
+'''
+To compute the contrastive loss at intra-image level
+'''
+
+def IntraImageContrastiveLoss(batch_centroids, 
+                              positive_weight_increment_step,
+                              negative_weight_increment_step,
+                              temperature,
+                              num_classes=19):
+    
+    loss = []
+    contrastive_loss_criterion = ContrastiveLoss()
+
+    for k in batch_centroids:
+        # calculate per clas
+        for cls in range(num_classes):
+            pos, neg = {}, {}
+            # pos: {'region_{}_{}': {tensor([...])} }
+            # neg: {'region_{}_{}': {cls: tensor([...]), cls: tensor([...]), cls: tensor([...]), ...}}
+            for region in batch_centroids[k]:  # 此时的region是 0_0
+                neg[region] = {}
+                for intra_cls in batch_centroids[k][region]:
+                    neg[region][intra_cls] = batch_centroids[k][region][intra_cls]    # 只有这样copy tensor，才不至于改变batch_centroids本身
+                if batch_centroids[k][region].__contains__(cls):
+                    pos[region] = batch_centroids[k][region][cls]
+                    del neg[region][cls]
+            pos_region, neg_region = [], []
+            pos_region = list(pos.keys()) # positive pairs所在的region
+            neg_region = list(neg.keys()) # negative pairs所在的region
+            all_region = list(set(pos_region + neg_region)) # 合并两个list，并且删除重复元素
+            for region_1 in all_region:
+                pos_per_region, neg_per_region = [], []         # 该类以该region为中心的positive和negative pairs
+                cl_per_region = []
+                region_1_index = np.array([int(region_1.split('_')[0]), int(region_1.split('_')[1])])
+                if pos.__contains__(region_1):
+                    pos_per_region.append(pos[region_1])        # positive pairs的头，即cls在region_1的centroids
+                for neg_cls_1 in neg[region_1]:
+                    neg_per_region.append(neg[region_1][neg_cls_1])   # negatiave pairs的头，即在region_1中除了cls之外的所有centroids
+                for region_2 in all_region:                         # 收集其它region的positive pairs和negative pairs
+                    if region_2 != region_1:        # 在一张图片内，该类的positive centroids一般只有一个
+                        region_2_index = np.array([int(region_2.split('_')[0]), int(region_2.split('_')[1])])
+                        positive_weight = 1 + positive_weight_increment_step * np.linalg.norm(region_1_index - region_2_index, ord=2) # L2 norm
+                        negative_weight = 1 - negative_weight_increment_step * np.linalg.norm(region_1_index - region_2_index, ord=2) # L2 norm
+
+                        if pos.__contains__(region_2):     # 其它区域的positive pairs，将会乘上权重
+                            pos_per_region.append(pos[region_2] * positive_weight)
+
+                        if neg.__contains__(region_2):     # 其它区域的negative pairs，将会乘上权重
+                            for neg_cls_2 in neg[region_2]:
+                                neg_per_region.append(neg[region_2][neg_cls_2] * negative_weight)
+                                
+                if pos_per_region != [] and neg_per_region != []:    # 否则会报错，stack不能对empty list操作
+                    pos_set_cl = torch.stack(pos_per_region, dim=0).cuda(non_blocking=True)       # 第一行tensor就是用于query的positive pair头，剩下都是所有乘上权重后的positive pairs
+                    neg_set_cl = torch.stack(neg_per_region, dim=0).cuda(non_blocking=True)       # 所有乘上权重后的negative pairs
+                    
+                    cl_per_region = contrastive_loss_criterion(pos_set_cl, neg_set_cl, temperature)
+                    loss.append(cl_per_region)
+    
+    if loss != []:
+        loss = torch.stack(loss, dim=0).cuda(non_blocking=True)  
+        loss = torch.mean(loss)    
+    else:
+        loss = torch.tensor([0]).cuda(non_blocking=True)
+
+    return loss
+
+    

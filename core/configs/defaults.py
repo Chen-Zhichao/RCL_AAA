@@ -73,6 +73,16 @@ _C.ACTIVE.RADIUS_K = 1
 # ---------------------------------------------------------------------------- #
 # Specific test options
 # ---------------------------------------------------------------------------- #
+
+_C.LOSS = CN()
+
+_C.LOSS.TEMPERATURE = 1.0
+_C.LOSS.POS_WEIGHT_INCRE_STEP = 0.02
+_C.LOSS.NEG_WEIGHT_INCRE_STEP = 0.02
+_C.LOSS.NUMPARTS_H = 2
+_C.LOSS.NUMPARTS_W = 4
+
+
 _C.TEST = CN()
 _C.TEST.BATCH_SIZE = 1
 
